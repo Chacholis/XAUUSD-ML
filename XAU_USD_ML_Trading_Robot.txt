@@ -1,0 +1,690 @@
+//+------------------------------------------------------------------+
+//|                                     XAU_USD_ML_Trading_Robot.mq5 |
+//|                                                           Author |
+//|                                                                  |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2025"
+#property link      ""
+#property version   "1.00"
+#property strict
+
+// Include required libraries
+#include <Trade\Trade.mqh>
+#include <Arrays\ArrayObj.mqh>
+#include <Math\Stat\Math.mqh>
+#include <Math\Stat\Normal.mqh>
+
+// Enumeration for trading direction
+enum ENUM_TRADE_DIRECTION {
+   TRADE_DIRECTION_BUY,       // Buy Only
+   TRADE_DIRECTION_SELL,      // Sell Only
+   TRADE_DIRECTION_BOTH       // Both Buy and Sell
+};
+
+// Enumeration for lot calculation mode
+enum ENUM_LOT_MODE {
+   LOT_MODE_FIXED,            // Fixed Lot
+   LOT_MODE_RISK_PERCENT      // Risk Percent
+};
+
+// Enumeration for trailing stop mode
+enum ENUM_TRAILING_MODE {
+   TRAILING_MODE_FIXED,       // Fixed Trail
+   TRAILING_MODE_ATR          // ATR Based
+};
+
+// Input Parameters - General Settings
+input string              GeneralSettings = "==== General Settings ===="; // General Settings
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_DIRECTION_BOTH;        // Trading Direction
+input int                 MagicNumber = 7845621;                         // Magic Number
+input double              MaxSpread = 5.0;                               // Maximum Spread in points
+input int                 Slippage = 30;                                 // Slippage in points
+input bool                UseNewsFilter = true;                          // Use News Filter
+
+// Input Parameters - Trading Hours
+input string              TimeSettings = "==== Trading Hours Settings ===="; // Trading Hours Settings
+input bool                UseTradingHours = true;                         // Use Trading Hours Filter
+input int                 StartHour = 8;                                 // Start Hour (Server Time)
+input int                 StartMinute = 0;                               // Start Minute
+input int                 EndHour = 20;                                  // End Hour (Server Time)
+input int                 EndMinute = 0;                                 // End Minute
+
+// Input Parameters - Money Management
+input string              MoneySettings = "==== Money Management Settings ===="; // Money Management Settings
+input ENUM_LOT_MODE       LotMode = LOT_MODE_RISK_PERCENT;               // Lot Calculation Mode
+input double              FixedLot = 0.01;                               // Fixed Lot Size
+input double              RiskPercent = 1.0;                             // Risk Percent per Trade
+input double              TakeProfit = 100.0;                            // Take Profit in points
+input double              StopLoss = 100.0;                              // Stop Loss in points
+
+// Input Parameters - Trailing Stop Settings
+input string              TrailingSettings = "==== Trailing Stop Settings ===="; // Trailing Stop Settings
+input bool                UseTrailingStop = true;                         // Use Trailing Stop
+input ENUM_TRAILING_MODE  TrailingMode = TRAILING_MODE_FIXED;            // Trailing Stop Mode
+input double              TrailingStop = 50.0;                           // Trailing Stop in points
+input double              TrailingStep = 10.0;                           // Trailing Step in points
+input double              BreakEvenLevel = 30.0;                         // Break Even Level in points
+input double              BreakEvenProfit = 5.0;                         // Break Even Profit in points
+input double              TargetProfit = 50.0;                           // Target Profit to Lock (points)
+input double              LockProfit = 20.0;                             // Profit to Lock (points)
+
+// Input Parameters - Machine Learning Settings
+input string              MLSettings = "==== Machine Learning Settings ===="; // ML Settings
+input int                 MLPeriod = 20;                                 // ML Lookback Period
+input double              MLThreshold = 0.6;                             // ML Signal Threshold (0.0-1.0)
+input int                 MLFeatureCount = 5;                            // Number of ML Features
+
+// Input Parameters - Andean Oscillator Settings (now built-in)
+input string              AndeanSettings = "==== Andean Oscillator Settings ===="; // Andean Oscillator Settings
+input int                 AndeanLength = 50;                             // Andean Length
+input int                 AndeanSignalLength = 9;                        // Andean Signal Length
+
+// Input Parameters - ATR SL Finder Settings (now built-in)
+input string              AtrSlSettings = "==== ATR SL Finder Settings ===="; // ATR SL Finder Settings
+input int                 AtrLength = 14;                                // ATR Length
+input double              AtrMultiplier = 1.5;                           // ATR Multiplier
+
+// Input Parameters - Kijun Sen Envelope Settings (now built-in)
+input string              KijunSettings = "==== Kijun Sen Envelope Settings ===="; // Kijun Sen Settings
+input int                 KijunSenPeriod = 100;                          // Kijun Sen Period
+input int                 EnvelopeDeviation = 230;                       // Envelope Deviation
+input int                 ShiftKijun = 0;                                // Shift
+
+// Input Parameters - Order Block Settings (now built-in)
+input string              OrderBlockSettings = "==== Order Block Settings ===="; // Order Block Settings
+input int                 OBMode = 0;                                    // Order Block Mode (0-Default, 1-FVG)
+input int                 OBLookback = 10;                               // Order Block Lookback Bars
+
+// Input Parameters - SuperTrend Settings (now built-in)
+input string              SuperTrendSettings = "==== SuperTrend Settings ===="; // SuperTrend Settings
+input int                 SuperTrendPeriod = 10;                         // SuperTrend Period
+input double              SuperTrendMultiplier = 3.0;                    // SuperTrend Multiplier
+
+// Global variables
+CTrade         trade;                                                    // Trading object
+MqlDateTime    dt_struct;                                                // Date time structure
+bool           inTradingHours;                                           // Trading hours flag
+bool           newsEventActive;                                          // News event flag
+datetime       lastTradeTime;                                            // Last trade time
+datetime       lastNewsCheckTime;                                        // Last news check time
+string         newsXML;                                                  // News XML content
+
+// Indicator handles
+int handle_atr;                                                          // ATR indicator
+
+// Indicator buffers
+double bull_andean[];                                                    // Andean Bull
+double bear_andean[];                                                    // Andean Bear
+double signal_andean[];                                                  // Andean Signal
+double asl_upper[];                                                      // ATR SL Upper
+double asl_lower[];                                                      // ATR SL Lower
+double kijun_top[];                                                      // Kijun Top
+double kijun_middle[];                                                    // Kijun Middle
+double kijun_bottom[];                                                   // Kijun Bottom
+double ob_bull_upper[];                                                  // OB Bull Upper
+double ob_bull_lower[];                                                  // OB Bull Lower
+double ob_bear_upper[];                                                  // OB Bear Upper
+double ob_bear_lower[];                                                  // OB Bear Lower
+double supertrend[];                                                     // SuperTrend
+double supertrend_color[];                                               // SuperTrend Color
+double atr_buffer[];                                                     // ATR values
+
+// Arrays for built-in indicators
+double high_prices[];                                                   // Array for high prices
+double low_prices[];                                                    // Array for low prices
+double close_prices[];                                                  // Array for close prices
+
+// Machine Learning buffers
+double ml_features[];                                                    // ML features array
+double ml_weights[];                                                     // ML weights array
+double ml_signal[];                                                      // ML signal array (0.0-1.0)
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit() {
+   // Initialize trading object
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(Slippage);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);
+   trade.SetAsyncMode(false);
+   
+   // Check symbol
+   if(_Symbol != "XAUUSD") {
+      Print("This EA is designed for XAUUSD only!");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+   
+   // Check timeframe
+   if(_Period != PERIOD_H1) {
+      Print("This EA is designed to work on H1 timeframe only!");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+   
+   // Initialize variables
+   lastTradeTime = 0;
+   lastNewsCheckTime = 0;
+   newsEventActive = false;
+   
+   // Initialize ML weights (these would normally be trained separately)
+   ArrayResize(ml_weights, MLFeatureCount);
+   ml_weights[0] = 0.7;    // Example weight for Andean Bull/Bear ratio
+   ml_weights[1] = 0.8;    // Example weight for SuperTrend direction
+   ml_weights[2] = 0.6;    // Example weight for Kijun position
+   ml_weights[3] = 0.5;    // Example weight for Order Block presence
+   ml_weights[4] = 0.6;    // Example weight for ATR SL Finder position
+   
+   // Initialize ATR handle (we'll still use the built-in ATR)
+   handle_atr = iATR(_Symbol, _Period, AtrLength);
+   
+   // Check indicator handles
+   if(handle_atr == INVALID_HANDLE) {
+      Print("Error creating ATR indicator handle");
+      return INIT_FAILED;
+   }
+   
+   // Initialize buffers
+   ArrayResize(bull_andean, 10);
+   ArrayResize(bear_andean, 10);
+   ArrayResize(signal_andean, 10);
+   ArrayResize(asl_upper, 10);
+   ArrayResize(asl_lower, 10);
+   ArrayResize(kijun_top, 10);
+   ArrayResize(kijun_middle, 10);
+   ArrayResize(kijun_bottom, 10);
+   ArrayResize(ob_bull_upper, 10);
+   ArrayResize(ob_bull_lower, 10);
+   ArrayResize(ob_bear_upper, 10);
+   ArrayResize(ob_bear_lower, 10);
+   ArrayResize(supertrend, 10);
+   ArrayResize(supertrend_color, 10);
+   ArrayResize(atr_buffer, 10);
+   
+   // Price arrays for custom indicators
+   ArrayResize(high_prices, 200);
+   ArrayResize(low_prices, 200);
+   ArrayResize(close_prices, 200);
+   
+   // Initialize ML features array
+   ArrayResize(ml_features, MLFeatureCount);
+   ArrayResize(ml_signal, MLPeriod);
+   
+   Print("XAU/USD ML Trading Robot initialized successfully");
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+   // Release indicator handles
+   IndicatorRelease(handle_atr);
+   
+   // Clean up arrays
+   ArrayFree(high_prices);
+   ArrayFree(low_prices);
+   ArrayFree(close_prices);
+   ArrayFree(bull_andean);
+   ArrayFree(bear_andean);
+   ArrayFree(signal_andean);
+   ArrayFree(asl_upper);
+   ArrayFree(asl_lower);
+   ArrayFree(kijun_top);
+   ArrayFree(kijun_middle);
+   ArrayFree(kijun_bottom);
+   ArrayFree(ob_bull_upper);
+   ArrayFree(ob_bull_lower);
+   ArrayFree(ob_bear_upper);
+   ArrayFree(ob_bear_lower);
+   ArrayFree(supertrend);
+   ArrayFree(supertrend_color);
+   ArrayFree(atr_buffer);
+   ArrayFree(ml_features);
+   ArrayFree(ml_weights);
+   ArrayFree(ml_signal);
+   
+   Print("XAU/USD ML Trading Robot deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick() {
+   // Update the current time
+   TimeToStruct(TimeCurrent(), dt_struct);
+   
+   // Check trading hours
+   inTradingHours = CheckTradingHours();
+   
+   // Check for news events if enabled
+   if(UseNewsFilter && TimeCurrent() - lastNewsCheckTime > 3600) { // Check every hour
+      CheckForNews();
+      lastNewsCheckTime = TimeCurrent();
+   }
+   
+   // Check for new bar
+   static datetime oldBarTime;
+   datetime newBarTime = iTime(_Symbol, PERIOD_H1, 0);
+   bool isNewBar = (oldBarTime != newBarTime);
+   
+   if(isNewBar) {
+      oldBarTime = newBarTime;
+      
+      // Only proceed if spread is acceptable
+      if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > MaxSpread) {
+         Print("Current spread ", SymbolInfoInteger(_Symbol, SYMBOL_SPREAD), 
+               " exceeds maximum spread ", MaxSpread);
+         return;
+      }
+      
+      // Only proceed during trading hours if trading hours filter is enabled
+      if(UseTradingHours && !inTradingHours) {
+         Print("Outside trading hours");
+         return;
+      }
+      
+      // Only proceed if no news events are active (if news filter is enabled)
+      if(UseNewsFilter && newsEventActive) {
+         Print("News event active, trading paused");
+         return;
+      }
+      
+      // Copy price data for our custom indicators
+      CopyHigh(_Symbol, _Period, 0, 200, high_prices);
+      CopyLow(_Symbol, _Period, 0, 200, low_prices);
+      CopyClose(_Symbol, _Period, 0, 200, close_prices);
+      
+      // Update indicator values
+      if(!UpdateIndicators()) {
+         Print("Failed to update indicators");
+         return;
+      }
+      
+      // Calculate ML signal
+      double ml_pred = PredictWithML();
+      
+      // Check for trade signals
+      int signal = GetTradeSignal(ml_pred);
+      
+      // Execute trades based on signal
+      if(signal != 0) {
+         ExecuteTrade(signal);
+      }
+      
+      // Manage existing positions
+      ManagePositions();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if current time is within trading hours                     |
+//+------------------------------------------------------------------+
+bool CheckTradingHours() {
+   if(!UseTradingHours) return true;
+   
+   int current_hour = dt_struct.hour;
+   int current_minute = dt_struct.min;
+   
+   // Convert times to minutes for easier comparison
+   int current_time_minutes = current_hour * 60 + current_minute;
+   int start_time_minutes = StartHour * 60 + StartMinute;
+   int end_time_minutes = EndHour * 60 + EndMinute;
+   
+   // Handle case where trading session crosses midnight
+   if(start_time_minutes > end_time_minutes) {
+      return (current_time_minutes >= start_time_minutes || current_time_minutes <= end_time_minutes);
+   } else {
+      return (current_time_minutes >= start_time_minutes && current_time_minutes <= end_time_minutes);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check for economic news events                                    |
+//+------------------------------------------------------------------+
+void CheckForNews() {
+   if(!UseNewsFilter) return;
+   
+   string url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
+   string cookie = NULL, headers;
+   char post[], result[];
+   int timeout = 5000;
+   
+   int res = WebRequest("GET", url, cookie, NULL, timeout, post, 0, result, headers);
+   
+   if(res == -1) {
+      int errorCode = GetLastError();
+      Print("Error in WebRequest. Error code: ", errorCode);
+      if(errorCode == 4060) {
+         Print("Make sure URL ", url, " is added to allowed URLs in Terminal settings!");
+      }
+      return;
+   }
+   
+   if(res != 200) {
+      Print("Failed to load news data. HTTP error code: ", res);
+      return;
+   }
+   
+   newsXML = CharArrayToString(result);
+   
+   // Parse XML and check for important news events
+   newsEventActive = ParseNewsXML();
+}
+
+//+------------------------------------------------------------------+
+//| Parse news XML for important events                               |
+//+------------------------------------------------------------------+
+bool ParseNewsXML() {
+   if(newsXML == "") return false;
+   
+   // Get current date in format YYYY-MM-DD
+   string currentDate = TimeToString(TimeCurrent(), TIME_DATE);
+   string tomorrow = TimeToString(TimeCurrent() + 86400, TIME_DATE);
+   
+   // Simple check for high-impact events for XAU or USD in next 24 hours
+   bool hasHighImpactNews = (StringFind(newsXML, "high") > 0 && 
+                             (StringFind(newsXML, "USD") > 0 || StringFind(newsXML, "XAU") > 0) &&
+                             (StringFind(newsXML, currentDate) > 0 || StringFind(newsXML, tomorrow) > 0));
+   
+   return hasHighImpactNews;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Andean Oscillator - custom implementation              |
+//+------------------------------------------------------------------+
+void CalculateAndeanOscillator() {
+   // Calculate Bull and Bear power
+   double bull_power = 0;
+   double bear_power = 0;
+   
+   for(int i = 0; i < AndeanLength; i++) {
+      // Bull power: close above previous close
+      if(close_prices[i] > close_prices[i+1]) {
+         bull_power += close_prices[i] - close_prices[i+1];
+      }
+      
+      // Bear power: close below previous close
+      if(close_prices[i] < close_prices[i+1]) {
+         bear_power += close_prices[i+1] - close_prices[i];
+      }
+   }
+   
+   // Store values
+   for(int i = 1; i < 10; i++) {
+      bull_andean[i] = bull_andean[i-1];
+      bear_andean[i] = bear_andean[i-1];
+   }
+   
+   bull_andean[0] = bull_power;
+   bear_andean[0] = bear_power;
+   
+   // Calculate signal line (simple moving average of bull/bear ratio)
+   double signal_sum = 0;
+   for(int i = 0; i < AndeanSignalLength; i++) {
+      double ratio = 0;
+      if(bear_andean[i] > 0) {
+         ratio = bull_andean[i] / bear_andean[i];
+      } else {
+         ratio = bull_andean[i] > 0 ? 2.0 : 0.5;
+      }
+      signal_sum += ratio;
+   }
+   
+   for(int i = 1; i < 10; i++) {
+      signal_andean[i] = signal_andean[i-1];
+   }
+   
+   signal_andean[0] = signal_sum / AndeanSignalLength;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate ATR SL Finder - custom implementation                  |
+//+------------------------------------------------------------------+
+void CalculateAtrSlFinder() {
+   // Get ATR value
+   CopyBuffer(handle_atr, 0, 0, 10, atr_buffer);
+   
+   double atr = atr_buffer[0];
+   double current_close = close_prices[0];
+   
+   // Calculate Upper and Lower SL levels
+   double upper_sl = current_close + atr * AtrMultiplier;
+   double lower_sl = current_close - atr * AtrMultiplier;
+   
+   // Update buffers
+   for(int i = 1; i < 10; i++) {
+      asl_upper[i] = asl_upper[i-1];
+      asl_lower[i] = asl_lower[i-1];
+   }
+   
+   asl_upper[0] = upper_sl;
+   asl_lower[0] = lower_sl;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Kijun Sen Envelope - custom implementation             |
+//+------------------------------------------------------------------+
+void CalculateKijunSenEnvelope() {
+   // Find highest high and lowest low over the Kijun period
+   double highest_high = high_prices[ArrayMaximum(high_prices, 0, KijunSenPeriod)];
+   double lowest_low = low_prices[ArrayMinimum(low_prices, 0, KijunSenPeriod)];
+   
+   // Calculate Kijun middle line (similar to Ichimoku's Kijun-sen)
+   double middle = (highest_high + lowest_low) / 2.0;
+   
+   // Calculate envelope deviation in points
+   double deviation = EnvelopeDeviation * _Point;
+   
+   // Calculate top and bottom lines
+   double top = middle + deviation;
+   double bottom = middle - deviation;
+   
+   // Update buffers
+   for(int i = 1; i < 10; i++) {
+      kijun_top[i] = kijun_top[i-1];
+      kijun_middle[i] = kijun_middle[i-1];
+      kijun_bottom[i] = kijun_bottom[i-1];
+   }
+   
+   kijun_top[0] = top;
+   kijun_middle[0] = middle;
+   kijun_bottom[0] = bottom;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate Order Block - custom implementation                    |
+//+------------------------------------------------------------------+
+void CalculateOrderBlock() {
+   // Initialize with zeros
+   for(int i = 0; i < 10; i++) {
+      ob_bull_upper[i] = 0;
+      ob_bull_lower[i] = 0;
+      ob_bear_upper[i] = 0;
+      ob_bear_lower[i] = 0;
+   }
+   
+   // Look for bullish and bearish order blocks
+   for(int i = 1; i < OBLookback; i++) {
+      // Bullish order block: previous bar is bearish, current bar is bullish
+      if(close_prices[i] < open_prices[i] && close_prices[i-1] > open_prices[i-1]) {
+         ob_bull_upper[0] = high_prices[i];
+         ob_bull_lower[0] = low_prices[i];
+         break;
+      }
+   }
+   
+   for(int i = 1; i < OBLookback; i++) {
+      // Bearish order block: previous bar is bullish, current bar is bearish
+      if(close_prices[i] > open_prices[i] && close_prices[i-1] < open_prices[i-1]) {
+         ob_bear_upper[0] = high_prices[i];
+         ob_bear_lower[0] = low_prices[i];
+         break;
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate SuperTrend - custom implementation                     |
+//+------------------------------------------------------------------+
+void CalculateSuperTrend() {
+   // Get ATR
+   double atr = atr_buffer[0];
+   
+   // Calculate bands
+   double upper_band = ((high_prices[0] + low_prices[0]) / 2) + (SuperTrendMultiplier * atr);
+   double lower_band = ((high_prices[0] + low_prices[0]) / 2) - (SuperTrendMultiplier * atr);
+   
+   // Initialize with some values if first run
+   if(supertrend[1] == 0) {
+      supertrend[1] = close_prices[1];
+      supertrend_color[1] = close_prices[1] > upper_band ? 1 : 0;
+   }
+   
+   // SuperTrend calculation logic
+   if(supertrend[1] <= upper_band) {
+      supertrend[0] = MathMax(lower_band, supertrend[1]);
+   } else {
+      supertrend[0] = MathMin(upper_band, supertrend[1]);
+   }
+   
+   // Color (0 for buy/green, 1 for sell/red)
+   if(close_prices[0] > supertrend[0]) {
+      supertrend_color[0] = 0; // Buy/Green
+   } else if(close_prices[0] < supertrend[0]) {
+      supertrend_color[0] = 1; // Sell/Red
+   } else {
+      supertrend_color[0] = supertrend_color[1]; // Maintain previous
+   }
+   
+   // Shift old values
+   for(int i = 9; i > 0; i--) {
+      supertrend[i] = supertrend[i-1];
+      supertrend_color[i] = supertrend_color[i-1];
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Update all indicator values                                       |
+//+------------------------------------------------------------------+
+bool UpdateIndicators() {
+   // Get ATR values
+   if(CopyBuffer(handle_atr, 0, 0, 10, atr_buffer) <= 0) return false;
+   
+   // Calculate all built-in indicators
+   CalculateAndeanOscillator();
+   CalculateAtrSlFinder();
+   CalculateKijunSenEnvelope();
+   CalculateOrderBlock();
+   CalculateSuperTrend();
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Predict using machine learning model                              |
+//+------------------------------------------------------------------+
+double PredictWithML() {
+   // Extract features from indicators
+   ExtractFeatures();
+   
+   // Apply sigmoid to get probability between 0 and 1
+   double weighted_sum = 0;
+   for(int i = 0; i < MLFeatureCount; i++) {
+      weighted_sum += ml_features[i] * ml_weights[i];
+   }
+   
+   // Sigmoid function to get a value between 0 and 1
+   double prediction = 1.0 / (1.0 + MathExp(-weighted_sum));
+   
+   // Update ML signal array (used for tracking predictions over time)
+   for(int i = MLPeriod - 1; i > 0; i--) {
+      ml_signal[i] = ml_signal[i-1];
+   }
+   ml_signal[0] = prediction;
+   
+   return prediction;
+}
+
+//+------------------------------------------------------------------+
+//| Extract features from indicators for ML model                      |
+//+------------------------------------------------------------------+
+void ExtractFeatures() {
+   // Feature 1: Andean Bull/Bear ratio
+   double andean_ratio = 0;
+   if(bear_andean[0] > 0) {
+      andean_ratio = bull_andean[0] / bear_andean[0];
+   } else {
+      andean_ratio = bull_andean[0] > 0 ? 2.0 : 0.5;
+   }
+   ml_features[0] = MathMin(MathMax(andean_ratio - 1.0, -1.0), 1.0); // Normalize to [-1, 1]
+   
+   // Feature 2: SuperTrend direction
+   ml_features[1] = supertrend_color[0] == 0 ? 1.0 : -1.0;
+   
+   // Feature 3: Price position relative to Kijun
+   double close = close_prices[0];
+   if(close > kijun_top[0]) ml_features[2] = 1.0;
+   else if(close < kijun_bottom[0]) ml_features[2] = -1.0;
+   else ml_features[2] = (close - kijun_middle[0]) / (kijun_top[0] - kijun_middle[0]) * 2.0;
+   
+   // Feature 4: Order Block presence
+   bool bull_ob = ob_bull_upper[0] > 0;
+   bool bear_ob = ob_bear_upper[0] > 0;
+   if(bull_ob && !bear_ob) ml_features[3] = 1.0;
+   else if(!bull_ob && bear_ob) ml_features[3] = -1.0;
+   else ml_features[3] = 0;
+   
+   // Feature 5: ATR SL Finder position
+   if(close > asl_upper[0]) ml_features[4] = 1.0;
+   else if(close < asl_lower[0]) ml_features[4] = -1.0;
+   else ml_features[4] = (close - asl_lower[0]) / (asl_upper[0] - asl_lower[0]) * 2.0 - 1.0;
+}
+
+//+------------------------------------------------------------------+
+//| Get trading signal based on indicators and ML prediction           |
+//+------------------------------------------------------------------+
+int GetTradeSignal(double ml_prediction) {
+   // Check ML prediction against threshold
+   bool ml_buy_signal = ml_prediction > 0.5 + MLThreshold / 2.0;
+   bool ml_sell_signal = ml_prediction < 0.5 - MLThreshold / 2.0;
+   
+   if(!ml_buy_signal && !ml_sell_signal) return 0; // No clear ML signal
+   
+   // Additional confirmations from indicators
+   bool andean_buy = bull_andean[0] > bear_andean[0] && bull_andean[0] > bull_andean[1];
+   bool andean_sell = bear_andean[0] > bull_andean[0] && bear_andean[0] > bear_andean[1];
+   
+   bool supertrend_buy = supertrend_color[0] == 0.0;
+   bool supertrend_sell = supertrend_color[0] == 1.0;
+   
+   bool kijun_buy = close_prices[0] > kijun_middle[0];
+   bool kijun_sell = close_prices[0] < kijun_middle[0];
+   
+   // Combined signal
+   bool buy_signal = ml_buy_signal && andean_buy && supertrend_buy && kijun_buy;
+   bool sell_signal = ml_sell_signal && andean_sell && supertrend_sell && kijun_sell;
+   
+   // Check trading direction restrictions
+   if(TradeDirection == TRADE_DIRECTION_BUY && sell_signal) return 0;
+   if(TradeDirection == TRADE_DIRECTION_SELL && buy_signal) return 0;
+   
+   if(buy_signal) return 1;  // Buy signal
+   if(sell_signal) return -1; // Sell signal
+   
+   return 0; // No clear signal
+}
+
+//+------------------------------------------------------------------+
+//| Execute a trade based on the signal                               |
+//+------------------------------------------------------------------+
+void ExecuteTrade(int signal) {
+   // Prevent trading too frequently
+   if(TimeCurrent() - lastTradeTime < 3600) { // At least 1 hour between trades
+      return;
+   }
+   
+   // Check if we already have a position in this direction
+   int positions = CountPositions();
+   if(positions >= 1) {
+      return; // Already have a position
+   }
