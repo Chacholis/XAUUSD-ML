@@ -1,0 +1,703 @@
+//+------------------------------------------------------------------+
+//|                                     XAU_USD_ML_Trading_Robot.mq5 |
+//|                                                           Author |
+//|                                                                  |
+//+------------------------------------------------------------------+
+#property copyright "Copyright 2025"
+#property link      ""
+#property version   "1.00"
+#property strict
+
+// Include required libraries
+#include <Trade\Trade.mqh>
+#include <Arrays\ArrayObj.mqh>
+#include <Math\Stat\Math.mqh>
+#include <Math\Stat\Normal.mqh>
+
+// Enumeration for trading direction
+enum ENUM_TRADE_DIRECTION {
+   TRADE_DIRECTION_BUY,       // Buy Only
+   TRADE_DIRECTION_SELL,      // Sell Only
+   TRADE_DIRECTION_BOTH       // Both Buy and Sell
+};
+
+// Enumeration for lot calculation mode
+enum ENUM_LOT_MODE {
+   LOT_MODE_FIXED,            // Fixed Lot
+   LOT_MODE_RISK_PERCENT      // Risk Percent
+};
+
+// Enumeration for trailing stop mode
+enum ENUM_TRAILING_MODE {
+   TRAILING_MODE_FIXED,       // Fixed Trail
+   TRAILING_MODE_ATR          // ATR Based
+};
+
+// Input Parameters - General Settings
+input string              GeneralSettings = "==== General Settings ===="; // General Settings
+input ENUM_TRADE_DIRECTION TradeDirection = TRADE_DIRECTION_BOTH;        // Trading Direction
+input int                 MagicNumber = 7845621;                         // Magic Number
+input double              MaxSpread = 5.0;                               // Maximum Spread in points
+input int                 Slippage = 30;                                 // Slippage in points
+input bool                UseNewsFilter = true;                          // Use News Filter
+
+// Input Parameters - Trading Hours
+input string              TimeSettings = "==== Trading Hours Settings ===="; // Trading Hours Settings
+input bool                UseTradingHours = true;                         // Use Trading Hours Filter
+input int                 StartHour = 8;                                 // Start Hour (Server Time)
+input int                 StartMinute = 0;                               // Start Minute
+input int                 EndHour = 20;                                  // End Hour (Server Time)
+input int                 EndMinute = 0;                                 // End Minute
+
+// Input Parameters - Money Management
+input string              MoneySettings = "==== Money Management Settings ===="; // Money Management Settings
+input ENUM_LOT_MODE       LotMode = LOT_MODE_RISK_PERCENT;               // Lot Calculation Mode
+input double              FixedLot = 0.01;                               // Fixed Lot Size
+input double              RiskPercent = 1.0;                             // Risk Percent per Trade
+input double              TakeProfit = 100.0;                            // Take Profit in points
+input double              StopLoss = 100.0;                              // Stop Loss in points
+
+// Input Parameters - Trailing Stop Settings
+input string              TrailingSettings = "==== Trailing Stop Settings ===="; // Trailing Stop Settings
+input bool                UseTrailingStop = true;                         // Use Trailing Stop
+input ENUM_TRAILING_MODE  TrailingMode = TRAILING_MODE_FIXED;            // Trailing Stop Mode
+input double              TrailingStop = 50.0;                           // Trailing Stop in points
+input double              TrailingStep = 10.0;                           // Trailing Step in points
+input double              BreakEvenLevel = 30.0;                         // Break Even Level in points
+input double              BreakEvenProfit = 5.0;                         // Break Even Profit in points
+input double              TargetProfit = 50.0;                           // Target Profit to Lock (points)
+input double              LockProfit = 20.0;                             // Profit to Lock (points)
+
+// Input Parameters - Machine Learning Settings
+input string              MLSettings = "==== Machine Learning Settings ===="; // ML Settings
+input int                 MLPeriod = 20;                                 // ML Lookback Period
+input double              MLThreshold = 0.6;                             // ML Signal Threshold (0.0-1.0)
+input int                 MLFeatureCount = 5;                            // Number of ML Features
+
+// Input Parameters - Andean Oscillator Settings
+input string              AndeanSettings = "==== Andean Oscillator Settings ===="; // Andean Oscillator Settings
+input int                 AndeanLength = 50;                             // Andean Length
+input int                 AndeanSignalLength = 9;                        // Andean Signal Length
+
+// Input Parameters - ATR SL Finder Settings
+input string              AtrSlSettings = "==== ATR SL Finder Settings ===="; // ATR SL Finder Settings
+input int                 AtrLength = 14;                                // ATR Length
+input double              AtrMultiplier = 1.5;                           // ATR Multiplier
+
+// Input Parameters - Kijun Sen Envelope Settings
+input string              KijunSettings = "==== Kijun Sen Envelope Settings ===="; // Kijun Sen Settings
+input int                 KijunSenPeriod = 100;                          // Kijun Sen Period
+input int                 EnvelopeDeviation = 230;                       // Envelope Deviation
+input int                 ShiftKijun = 0;                                // Shift
+
+// Input Parameters - Order Block Settings
+input string              OrderBlockSettings = "==== Order Block Settings ===="; // Order Block Settings
+input int                 OBMode = 0;                                    // Order Block Mode (0-Default, 1-FVG)
+
+// Input Parameters - SuperTrend Settings
+input string              SuperTrendSettings = "==== SuperTrend Settings ===="; // SuperTrend Settings
+input int                 SuperTrendPeriod = 10;                         // SuperTrend Period
+input double              SuperTrendMultiplier = 3.0;                    // SuperTrend Multiplier
+
+// Global variables
+CTrade         trade;                                                    // Trading object
+MqlDateTime    dt_struct;                                                // Date time structure
+bool           inTradingHours;                                           // Trading hours flag
+bool           newsEventActive;                                          // News event flag
+datetime       lastTradeTime;                                            // Last trade time
+datetime       lastNewsCheckTime;                                        // Last news check time
+string         newsXML;                                                  // News XML content
+
+// Indicator handles
+int handle_andean;                                                       // Andean Oscillator
+int handle_atr_sl;                                                       // ATR SL Finder
+int handle_kijun;                                                        // Kijun Sen Envelope
+int handle_ob;                                                           // Order Block
+int handle_supertrend;                                                   // SuperTrend
+int handle_atr;                                                          // ATR indicator
+
+// Indicator buffers
+double bull_andean[];                                                    // Andean Bull
+double bear_andean[];                                                    // Andean Bear
+double signal_andean[];                                                  // Andean Signal
+double asl_upper[];                                                      // ATR SL Upper
+double asl_lower[];                                                      // ATR SL Lower
+double kijun_top[];                                                      // Kijun Top
+double kijun_middle[];                                                   // Kijun Middle
+double kijun_bottom[];                                                   // Kijun Bottom
+double ob_bull_upper[];                                                  // OB Bull Upper
+double ob_bull_lower[];                                                  // OB Bull Lower
+double ob_bear_upper[];                                                  // OB Bear Upper
+double ob_bear_lower[];                                                  // OB Bear Lower
+double supertrend[];                                                     // SuperTrend
+double supertrend_color[];                                               // SuperTrend Color
+double atr_buffer[];                                                     // ATR values
+
+// Machine Learning buffers
+double ml_features[];                                                    // ML features array
+double ml_weights[];                                                     // ML weights array
+double ml_signal[];                                                      // ML signal array (0.0-1.0)
+
+//+------------------------------------------------------------------+
+//| Expert initialization function                                   |
+//+------------------------------------------------------------------+
+int OnInit() {
+   // Initialize trading object
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(Slippage);
+   trade.SetTypeFilling(ORDER_FILLING_FOK);
+   trade.SetAsyncMode(false);
+   
+   // Check symbol
+   if(_Symbol != "XAUUSD") {
+      Print("This EA is designed for XAUUSD only!");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+   
+   // Check timeframe
+   if(_Period != PERIOD_H1) {
+      Print("This EA is designed to work on H1 timeframe only!");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+   
+   // Initialize variables
+   lastTradeTime = 0;
+   lastNewsCheckTime = 0;
+   newsEventActive = false;
+   
+   // Initialize ML weights (these would normally be trained separately)
+   ArrayResize(ml_weights, MLFeatureCount);
+   ml_weights[0] = 0.7;    // Example weight for Andean Bull/Bear ratio
+   ml_weights[1] = 0.8;    // Example weight for SuperTrend direction
+   ml_weights[2] = 0.6;    // Example weight for Kijun position
+   ml_weights[3] = 0.5;    // Example weight for Order Block presence
+   ml_weights[4] = 0.6;    // Example weight for ATR SL Finder position
+   
+   // Initialize indicator handles
+   handle_andean = iCustom(_Symbol, _Period, "Andean Oscillator", AndeanLength, AndeanSignalLength);
+   handle_atr_sl = iCustom(_Symbol, _Period, "AtrSlFinder", AtrLength, AtrMultiplier);
+   handle_kijun = iCustom(_Symbol, _Period, "KijunSenEnvelope", KijunSenPeriod, EnvelopeDeviation, ShiftKijun);
+   handle_ob = iCustom(_Symbol, _Period, "OrderBlock", OBMode);
+   handle_supertrend = iCustom(_Symbol, _Period, "SuperTrend", SuperTrendPeriod, SuperTrendMultiplier, true);
+   handle_atr = iATR(_Symbol, _Period, AtrLength);
+   
+   // Check indicator handles
+   if(handle_andean == INVALID_HANDLE || handle_atr_sl == INVALID_HANDLE || 
+      handle_kijun == INVALID_HANDLE || handle_ob == INVALID_HANDLE || 
+      handle_supertrend == INVALID_HANDLE || handle_atr == INVALID_HANDLE) {
+      Print("Error creating indicator handles");
+      return INIT_FAILED;
+   }
+   
+   // Initialize ML features array
+   ArrayResize(ml_features, MLFeatureCount);
+   ArrayResize(ml_signal, MLPeriod);
+   
+   Print("XAU/USD ML Trading Robot initialized successfully");
+   return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert deinitialization function                                 |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason) {
+   // Release indicator handles
+   IndicatorRelease(handle_andean);
+   IndicatorRelease(handle_atr_sl);
+   IndicatorRelease(handle_kijun);
+   IndicatorRelease(handle_ob);
+   IndicatorRelease(handle_supertrend);
+   IndicatorRelease(handle_atr);
+   
+   // Clean up
+   ArrayFree(ml_features);
+   ArrayFree(ml_weights);
+   ArrayFree(ml_signal);
+   
+   Print("XAU/USD ML Trading Robot deinitialized");
+}
+
+//+------------------------------------------------------------------+
+//| Expert tick function                                             |
+//+------------------------------------------------------------------+
+void OnTick() {
+   // Update the current time
+   TimeToStruct(TimeCurrent(), dt_struct);
+   
+   // Check trading hours
+   inTradingHours = CheckTradingHours();
+   
+   // Check for news events if enabled
+   if(UseNewsFilter && TimeCurrent() - lastNewsCheckTime > 3600) { // Check every hour
+      CheckForNews();
+      lastNewsCheckTime = TimeCurrent();
+   }
+   
+   // Check for new bar
+   static datetime oldBarTime;
+   datetime newBarTime = iTime(_Symbol, PERIOD_H1, 0);
+   bool isNewBar = (oldBarTime != newBarTime);
+   
+   if(isNewBar) {
+      oldBarTime = newBarTime;
+      
+      // Only proceed if spread is acceptable
+      if(SymbolInfoInteger(_Symbol, SYMBOL_SPREAD) > MaxSpread) {
+         Print("Current spread ", SymbolInfoInteger(_Symbol, SYMBOL_SPREAD), 
+               " exceeds maximum spread ", MaxSpread);
+         return;
+      }
+      
+      // Only proceed during trading hours if trading hours filter is enabled
+      if(UseTradingHours && !inTradingHours) {
+         Print("Outside trading hours");
+         return;
+      }
+      
+      // Only proceed if no news events are active (if news filter is enabled)
+      if(UseNewsFilter && newsEventActive) {
+         Print("News event active, trading paused");
+         return;
+      }
+      
+      // Update indicator values
+      if(!UpdateIndicators()) {
+         Print("Failed to update indicators");
+         return;
+      }
+      
+      // Calculate ML signal
+      double ml_pred = PredictWithML();
+      
+      // Check for trade signals
+      int signal = GetTradeSignal(ml_pred);
+      
+      // Execute trades based on signal
+      if(signal != 0) {
+         ExecuteTrade(signal);
+      }
+      
+      // Manage existing positions
+      ManagePositions();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check if current time is within trading hours                     |
+//+------------------------------------------------------------------+
+bool CheckTradingHours() {
+   if(!UseTradingHours) return true;
+   
+   int current_hour = dt_struct.hour;
+   int current_minute = dt_struct.min;
+   
+   // Convert times to minutes for easier comparison
+   int current_time_minutes = current_hour * 60 + current_minute;
+   int start_time_minutes = StartHour * 60 + StartMinute;
+   int end_time_minutes = EndHour * 60 + EndMinute;
+   
+   // Handle case where trading session crosses midnight
+   if(start_time_minutes > end_time_minutes) {
+      return (current_time_minutes >= start_time_minutes || current_time_minutes <= end_time_minutes);
+   } else {
+      return (current_time_minutes >= start_time_minutes && current_time_minutes <= end_time_minutes);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check for economic news events                                    |
+//+------------------------------------------------------------------+
+void CheckForNews() {
+   if(!UseNewsFilter) return;
+   
+   string url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml";
+   string cookie = NULL, headers;
+   char post[], result[];
+   int timeout = 5000;
+   
+   int res = WebRequest("GET", url, cookie, NULL, timeout, post, 0, result, headers);
+   
+   if(res == -1) {
+      int errorCode = GetLastError();
+      Print("Error in WebRequest. Error code: ", errorCode);
+      if(errorCode == 4060) {
+         Print("Make sure URL ", url, " is added to allowed URLs in Terminal settings!");
+      }
+      return;
+   }
+   
+   if(res != 200) {
+      Print("Failed to load news data. HTTP error code: ", res);
+      return;
+   }
+   
+   newsXML = CharArrayToString(result);
+   
+   // Parse XML and check for important news events
+   newsEventActive = ParseNewsXML();
+}
+
+//+------------------------------------------------------------------+
+//| Parse news XML for important events                               |
+//+------------------------------------------------------------------+
+bool ParseNewsXML() {
+   if(newsXML == "") return false;
+   
+   // Get current date in format YYYY-MM-DD
+   string currentDate = TimeToString(TimeCurrent(), TIME_DATE);
+   string tomorrow = TimeToString(TimeCurrent() + 86400, TIME_DATE);
+   
+   // Simple check for high-impact events for XAU or USD in next 24 hours
+   bool hasHighImpactNews = (StringFind(newsXML, "high") > 0 && 
+                             (StringFind(newsXML, "USD") > 0 || StringFind(newsXML, "XAU") > 0) &&
+                             (StringFind(newsXML, currentDate) > 0 || StringFind(newsXML, tomorrow) > 0));
+   
+   return hasHighImpactNews;
+}
+
+//+------------------------------------------------------------------+
+//| Update all indicator values                                       |
+//+------------------------------------------------------------------+
+bool UpdateIndicators() {
+   // Get Andean Oscillator values
+   if(CopyBuffer(handle_andean, 0, 0, 3, bull_andean) <= 0) return false;
+   if(CopyBuffer(handle_andean, 1, 0, 3, bear_andean) <= 0) return false;
+   if(CopyBuffer(handle_andean, 2, 0, 3, signal_andean) <= 0) return false;
+   
+   // Get ATR SL Finder values
+   if(CopyBuffer(handle_atr_sl, 0, 0, 3, asl_upper) <= 0) return false;
+   if(CopyBuffer(handle_atr_sl, 1, 0, 3, asl_lower) <= 0) return false;
+   
+   // Get Kijun Sen Envelope values
+   if(CopyBuffer(handle_kijun, 0, 0, 3, kijun_top) <= 0) return false;
+   if(CopyBuffer(handle_kijun, 1, 0, 3, kijun_middle) <= 0) return false;
+   if(CopyBuffer(handle_kijun, 2, 0, 3, kijun_bottom) <= 0) return false;
+   
+   // Get Order Block values
+   if(CopyBuffer(handle_ob, 0, 0, 3, ob_bull_upper) <= 0) return false;
+   if(CopyBuffer(handle_ob, 1, 0, 3, ob_bull_lower) <= 0) return false;
+   if(CopyBuffer(handle_ob, 2, 0, 3, ob_bear_upper) <= 0) return false;
+   if(CopyBuffer(handle_ob, 3, 0, 3, ob_bear_lower) <= 0) return false;
+   
+   // Get SuperTrend values
+   if(CopyBuffer(handle_supertrend, 2, 0, 3, supertrend) <= 0) return false;
+   if(CopyBuffer(handle_supertrend, 3, 0, 3, supertrend_color) <= 0) return false;
+   
+   // Get ATR values
+   if(CopyBuffer(handle_atr, 0, 0, 3, atr_buffer) <= 0) return false;
+   
+   return true;
+}
+
+//+------------------------------------------------------------------+
+//| Predict using machine learning model                              |
+//+------------------------------------------------------------------+
+double PredictWithML() {
+   // Extract features from indicators
+   ExtractFeatures();
+   
+   // Apply sigmoid to get probability between 0 and 1
+   double weighted_sum = 0;
+   for(int i = 0; i < MLFeatureCount; i++) {
+      weighted_sum += ml_features[i] * ml_weights[i];
+   }
+   
+   // Sigmoid function to get a value between 0 and 1
+   double prediction = 1.0 / (1.0 + MathExp(-weighted_sum));
+   
+   // Update ML signal array (used for tracking predictions over time)
+   for(int i = MLPeriod - 1; i > 0; i--) {
+      ml_signal[i] = ml_signal[i-1];
+   }
+   ml_signal[0] = prediction;
+   
+   return prediction;
+}
+
+//+------------------------------------------------------------------+
+//| Extract features from indicators for ML model                      |
+//+------------------------------------------------------------------+
+void ExtractFeatures() {
+   // Feature 1: Andean Bull/Bear ratio
+   double andean_ratio = 0;
+   if(bear_andean[0] > 0) {
+      andean_ratio = bull_andean[0] / bear_andean[0];
+   } else {
+      andean_ratio = bull_andean[0] > 0 ? 2.0 : 0.5;
+   }
+   ml_features[0] = MathMin(MathMax(andean_ratio - 1.0, -1.0), 1.0); // Normalize to [-1, 1]
+   
+   // Feature 2: SuperTrend direction
+   ml_features[1] = supertrend_color[0] == 0 ? 1.0 : -1.0;
+   
+   // Feature 3: Price position relative to Kijun
+   double close = iClose(_Symbol, _Period, 0);
+   if(close > kijun_top[0]) ml_features[2] = 1.0;
+   else if(close < kijun_bottom[0]) ml_features[2] = -1.0;
+   else ml_features[2] = (close - kijun_middle[0]) / (kijun_top[0] - kijun_middle[0]) * 2.0;
+   
+   // Feature 4: Order Block presence
+   bool bull_ob = ob_bull_upper[0] > 0;
+   bool bear_ob = ob_bear_upper[0] > 0;
+   if(bull_ob && !bear_ob) ml_features[3] = 1.0;
+   else if(!bull_ob && bear_ob) ml_features[3] = -1.0;
+   else ml_features[3] = 0;
+   
+   // Feature 5: ATR SL Finder position
+   if(close > asl_upper[0]) ml_features[4] = 1.0;
+   else if(close < asl_lower[0]) ml_features[4] = -1.0;
+   else ml_features[4] = (close - asl_lower[0]) / (asl_upper[0] - asl_lower[0]) * 2.0 - 1.0;
+}
+
+//+------------------------------------------------------------------+
+//| Get trading signal based on indicators and ML prediction           |
+//+------------------------------------------------------------------+
+int GetTradeSignal(double ml_prediction) {
+   // Check ML prediction against threshold
+   bool ml_buy_signal = ml_prediction > 0.5 + MLThreshold / 2.0;
+   bool ml_sell_signal = ml_prediction < 0.5 - MLThreshold / 2.0;
+   
+   if(!ml_buy_signal && !ml_sell_signal) return 0; // No clear ML signal
+   
+   // Additional confirmations from indicators
+   bool andean_buy = bull_andean[0] > bear_andean[0] && bull_andean[0] > bull_andean[1];
+   bool andean_sell = bear_andean[0] > bull_andean[0] && bear_andean[0] > bear_andean[1];
+   
+   bool supertrend_buy = supertrend_color[0] == 0.0;
+   bool supertrend_sell = supertrend_color[0] == 1.0;
+   
+   bool kijun_buy = iClose(_Symbol, _Period, 0) > kijun_middle[0];
+   bool kijun_sell = iClose(_Symbol, _Period, 0) < kijun_middle[0];
+   
+   // Combined signal
+   bool buy_signal = ml_buy_signal && andean_buy && supertrend_buy && kijun_buy;
+   bool sell_signal = ml_sell_signal && andean_sell && supertrend_sell && kijun_sell;
+   
+   // Check trading direction restrictions
+   if(TradeDirection == TRADE_DIRECTION_BUY && sell_signal) return 0;
+   if(TradeDirection == TRADE_DIRECTION_SELL && buy_signal) return 0;
+   
+   if(buy_signal) return 1;  // Buy signal
+   if(sell_signal) return -1; // Sell signal
+   
+   return 0; // No clear signal
+}
+
+//+------------------------------------------------------------------+
+//| Execute a trade based on the signal                               |
+//+------------------------------------------------------------------+
+void ExecuteTrade(int signal) {
+   // Prevent trading too frequently
+   if(TimeCurrent() - lastTradeTime < 3600) { // At least 1 hour between trades
+      return;
+   }
+   
+   // Check if we already have a position in this direction
+   int positions = CountPositions();
+   if(positions >= 1) {
+      return; // Already have a position
+   }
+   
+   // Calculate lot size
+   double lot_size = CalculateLotSize(signal < 0);
+   
+   // Calculate TP and SL levels
+   double price = signal > 0 ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double tp_price = 0, sl_price = 0;
+   
+   // Use ATR for dynamic TP/SL if needed
+   double atr_value = atr_buffer[0];
+   
+   if(signal > 0) { // Buy
+      tp_price = price + TakeProfit * _Point;
+      sl_price = price - StopLoss * _Point;
+   } else { // Sell
+      tp_price = price - TakeProfit * _Point;
+      sl_price = price + StopLoss * _Point;
+   }
+   
+   // Execute the trade
+   bool result = false;
+   if(signal > 0) {
+      result = trade.Buy(lot_size, _Symbol, 0, sl_price, tp_price, "XAU ML Buy");
+   } else {
+      result = trade.Sell(lot_size, _Symbol, 0, sl_price, tp_price, "XAU ML Sell");
+   }
+   
+   if(result) {
+      lastTradeTime = TimeCurrent();
+      Print("Trade executed: ", signal > 0 ? "BUY" : "SELL", " at price ", price, 
+            " with lot size ", lot_size, " TP: ", tp_price, " SL: ", sl_price);
+   } else {
+      Print("Trade execution failed. Error: ", GetLastError());
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Calculate lot size based on risk management                        |
+//+------------------------------------------------------------------+
+double CalculateLotSize(bool is_sell) {
+   if(LotMode == LOT_MODE_FIXED) {
+      return FixedLot;
+   } else { // LOT_MODE_RISK_PERCENT
+      double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+      double risk_amount = balance * RiskPercent / 100.0;
+      
+      // Calculate SL distance
+      double entry_price = is_sell ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double sl_price = is_sell ? entry_price + StopLoss * _Point : entry_price - StopLoss * _Point;
+      double sl_distance = MathAbs(entry_price - sl_price);
+      
+      // Calculate lot size based on risk
+      double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
+      double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
+      double lot_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+      double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+      double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
+      
+      double points_per_tick = _Point / tick_size;
+      double ticks_per_sl = sl_distance * points_per_tick;
+      double cash_per_lot_per_tick = tick_value;
+      double loss_per_lot = ticks_per_sl * cash_per_lot_per_tick;
+      
+      // Calculate lot size that risks the specified amount
+      double lot_size = risk_amount / loss_per_lot;
+      
+      // Round to the nearest lot step
+      lot_size = MathFloor(lot_size / lot_step) * lot_step;
+      
+      // Ensure lot size is within allowed range
+      lot_size = MathMax(min_lot, MathMin(max_lot, lot_size));
+      
+      return lot_size;
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Count open positions                                              |
+//+------------------------------------------------------------------+
+int CountPositions() {
+   int count = 0;
+   for(int i = 0; i < PositionsTotal(); i++) {
+      if(PositionGetSymbol(i) == _Symbol && PositionGetInteger(POSITION_MAGIC) == MagicNumber) {
+         count++;
+      }
+   }
+   return count;
+}
+
+//+------------------------------------------------------------------+
+//| Manage open positions (trailing stop, break even, etc.)           |
+//+------------------------------------------------------------------+
+void ManagePositions() {
+   for(int i = PositionsTotal() - 1; i >= 0; i--) {
+      if(PositionGetSymbol(i) != _Symbol) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+      
+      // Get position details
+      ulong ticket = PositionGetTicket(i);
+      if(!PositionSelectByTicket(ticket)) continue;
+      
+      double position_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      double current_price = PositionGetDouble(POSITION_PRICE_CURRENT);
+      double position_sl = PositionGetDouble(POSITION_SL);
+      double position_tp = PositionGetDouble(POSITION_TP);
+      long position_type = PositionGetInteger(POSITION_TYPE);
+      
+      // Calculate profit in points
+      double profit_points = 0;
+      if(position_type == POSITION_TYPE_BUY) {
+         profit_points = (current_price - position_price) / _Point;
+      } else {
+         profit_points = (position_price - current_price) / _Point;
+      }
+      
+      // Break even logic
+      if(profit_points >= BreakEvenLevel && 
+         ((position_type == POSITION_TYPE_BUY && position_sl < position_price) || 
+          (position_type == POSITION_TYPE_SELL && (position_sl > position_price || position_sl == 0)))) {
+         
+         double new_sl = position_type == POSITION_TYPE_BUY ? 
+                          position_price + BreakEvenProfit * _Point : 
+                          position_price - BreakEvenProfit * _Point;
+         
+         trade.PositionModify(ticket, new_sl, position_tp);
+         Print("Break even set for ticket ", ticket, " at price ", new_sl);
+      }
+      
+      // Lock profit logic
+      if(profit_points >= TargetProfit) {
+         double locked_price = position_type == POSITION_TYPE_BUY ? 
+                               position_price + LockProfit * _Point : 
+                               position_price - LockProfit * _Point;
+         
+         if((position_type == POSITION_TYPE_BUY && position_sl < locked_price) || 
+            (position_type == POSITION_TYPE_SELL && position_sl > locked_price)) {
+            
+           trade.PositionModify(ticket, locked_price, position_tp);
+            Print("Profit locked for ticket ", ticket, " at price ", locked_price);
+         }
+      }
+      
+      // Trailing stop logic
+      if(UseTrailingStop && profit_points >= TrailingStop) {
+         double atr_value = atr_buffer[0];
+         double trail_distance = TrailingMode == TRAILING_MODE_ATR ? atr_value * AtrMultiplier : TrailingStop * _Point;
+         double new_sl = 0;
+         
+         if(position_type == POSITION_TYPE_BUY) {
+            new_sl = current_price - trail_distance;
+            if(new_sl > position_sl + TrailingStep * _Point) {
+               trade.PositionModify(ticket, new_sl, position_tp);
+               Print("Trailing stop updated for ticket ", ticket, " to ", new_sl);
+            }
+         } else {
+            new_sl = current_price + trail_distance;
+            if(position_sl == 0 || new_sl < position_sl - TrailingStep * _Point) {
+               trade.PositionModify(ticket, new_sl, position_tp);
+               Print("Trailing stop updated for ticket ", ticket, " to ", new_sl);
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Custom functions for Machine Learning                             |
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Normalize data to range [0,1]                                     |
+//+------------------------------------------------------------------+
+double Normalize(double value, double min, double max) {
+   if(max == min) return 0.5;
+   return (value - min) / (max - min);
+}
+
+//+------------------------------------------------------------------+
+//| Sigmoid activation function                                       |
+//+------------------------------------------------------------------+
+double Sigmoid(double x) {
+   return 1.0 / (1.0 + MathExp(-x));
+}
+
+//+------------------------------------------------------------------+
+//| Relu activation function                                          |
+//+------------------------------------------------------------------+
+double Relu(double x) {
+   return MathMax(0, x);
+}
+
+//+------------------------------------------------------------------+
+//| Calculate weighted sum of inputs                                  |
+//+------------------------------------------------------------------+
+double WeightedSum(double &inputs[], double &weights[], int size) {
+   double sum = 0;
+   for(int i = 0; i < size; i++) {
+      sum += inputs[i] * weights[i];
+   }
+   return sum;
+}
+
+//+------------------------------------------------------------------+
+            
